@@ -57,19 +57,7 @@ double predict_ui(const RowVectorXd& Pu, const VectorXd& Qi, const RowVectorXd& 
     return (Pu + z)*Qi + bu + bi + mu;
 }
 
-MatrixXd predict(const MatrixXd& P, const MatrixXd Q, const MatrixXd& Y, const MatrixXd& Z
-    , const VectorXd& bu, const VectorXd& bi, double mu)
-{
-    MatrixXd tmp = Y.transpose(); // 74ms
-    tmp = Z * tmp; //525s
-    tmp += P;
-    tmp *= Q;//240s
-    tmp += bu * RowVectorXd::Ones(bi.size());//90s
-    tmp += VectorXd::Ones(bu.size())*(bi.transpose());//120s
-    return tmp.array() + mu;
-}
-
-MatrixXd predict(const MatrixXd& P, const MatrixXd Q, const MatrixXd& Y, const SpMat& Z
+MatrixXd predict(const MatrixXd& P, const MatrixXd& Q, const MatrixXd& Y, const SpMat& Z
     , const VectorXd& bu, const VectorXd& bi, double mu)
 {
     MatrixXd tmp = Y.transpose(); // 74ms
@@ -286,33 +274,6 @@ double metropolis(const vector<int>& uSeq, const map<int, pair<vector<int>, vect
 }
 
 
-MatrixXd constructZ(SpMat& mat)
-{
-    bool c = mat.isCompressed();
-    if (c)
-    {
-        mat.uncompress();
-    }
-    vector<double> nuVec(mat.innerNonZeroPtr(), mat.innerNonZeroPtr() + mat.rows());
-    transform(nuVec.begin(), nuVec.end(), nuVec.begin(), [](double& nu) { return nu ? 1.0 / sqrt(nu) : 0; });
-
-    MatrixXd Z = MatrixXd::Zero(mat.rows(), mat.cols());
-#pragma omp parallel for
-    for (int i = 0; i < (int)Z.rows(); ++i)
-    {
-#pragma omp parallel for
-        for (int j = 0; j < (int)Z.cols(); ++j)
-        {
-            if (mat.coeff(i, j)) Z(i, j) = nuVec[i];
-        }
-    }
-    if (c)
-    {
-        mat.makeCompressed();
-    }
-    return Z;
-}
-
 SpMat constructZ1(SpMat& mat)
 {
     bool c = mat.isCompressed();
@@ -366,7 +327,6 @@ void learningSVDpp(SpMat_csr& train_csr, const vector<T>& validationSet, MatrixX
 
     vector<int> uVec(uirMap.size());
     std::transform(uirMap.begin(), uirMap.end(), uVec.begin(), [](decltype(*uirMap.begin())& a) { return a.first; });
-    //std::iota(begin(uVec), end(uVec), 0);
 
     int bestEpoch = 0;
     double best_validation_rmse = 1e9;
@@ -438,13 +398,9 @@ void initParams(MatrixXd* P, MatrixXd* Q, VectorXd* bu, VectorXd* bi, MatrixXd* 
 void setNegSample(SpMat& train_csr, int ratio = 1)
 {
     train_csr.reserve(VectorXi::Constant(train_csr.rows(), 1000));
-    /*default_random_engine e;
-    e.seed(9);
-    uniform_real_distribution<double> u(0.0, 1.0);*/
 
     srand(3);
     MatrixXd randM = MatrixXd::Random(train_csr.rows(), train_csr.cols());//74s
-    //randM.setRandom();
     randM.array() += 1;//39s
     randM.array() *= 0.5;//39s
     double threshold = (1.0*ratio* train_csr.nonZeros()) / train_csr.size();
@@ -464,76 +420,6 @@ void setNegSample(SpMat& train_csr, int ratio = 1)
     train_csr.makeCompressed();
 }
 
-MatrixXi sortRateMat(const MatrixXd& rateMat)
-{
-    int nr = static_cast<int>(rateMat.rows());
-    int nc = static_cast<int>(rateMat.cols());
-    Matrix<int, Dynamic, Dynamic, RowMajor> indMat;
-    indMat.setOnes(nr, nc);
-    DiagonalMatrix<int, Dynamic> indDiagMat(nc);
-    indDiagMat.diagonal() = VectorXi::LinSpaced(nc, 0, nc - 1);
-    indMat *= indDiagMat;
-
-#pragma omp parallel for
-    for (int u = 0; u < nr; ++u)
-    {
-        auto pStart = indMat.data() + u * nc;
-        sort(pStart, pStart + nc, [&rateMat, u](int i, int j) {
-            return rateMat(u, i) > rateMat(u, j);
-        });
-    }
-    return indMat;
-}
-
-set<pair<int, int>> tupleVecToPairSet(const vector<T>& a)
-{
-    set<pair<int, int>> re;
-    for (const T& t: a)
-    {
-        re.insert(make_pair(static_cast<int>(t.row()), static_cast<int>(t.col())));
-    }
-    return re;
-}
-
-set<pair<int, int>> uiMapToPairSet(const map<int, vector<int>>& a)
-{
-    set<pair<int, int>> re;
-    
-    for (const auto& uiList: a)
-    {
-        //int N = min(num, );
-        for (int k = 0; k < (int)uiList.second.size(); ++k)
-        {
-            re.emplace(uiList.first, uiList.second[k]);
-        }        
-    }
-    return re;
-}
-
-map<int, vector<int>> tupleVecToUiMap(const vector<T>& a)
-{
-    map<int, vector<int>> re;
-    for (const T& t: a)
-    {
-        int u = (int)t.row();
-        auto it = re.emplace(u, vector<int>());
-        it.first->second.emplace_back((int)t.col());
-    }    
-    return re;
-}
-
-map<int, vector<int>> uiMapSlice(const map<int, vector<int>>& a, int n)
-{
-    assert(n > 0);
-    assert(a.begin()->second.size() >= n);
-    map<int, vector<int>> re;
-    for (const auto& uiList : a)
-    {
-        re.emplace(uiList.first, vector<int>{uiList.second.begin(), uiList.second.begin() + n});
-    }
-    return re;
-}
-
 pair<vector<double>, vector<double>> precisionRecall(const vector<T> & indexedTestData, const MatrixXi& recIndexMat)
 {
     map<int, set<int>> testUiMap;
@@ -546,34 +432,22 @@ pair<vector<double>, vector<double>> precisionRecall(const vector<T> & indexedTe
 
 
     int N = (int)recIndexMat.cols();
-    vector<double> numerator(N, 0.0);
-    //vector<set<int>> recUiMap(recIndexMat.rows());
+    vector<double> numerator(N+1, 0.0);
     for (int i = 0; i < N; ++i)
     {
         VectorXi tmp = recIndexMat.col(i);
-        /*for (int k = 0; k < recUiMap.size(); ++k)
-        {
-            recUiMap[k].insert(tmp(k));
-        }*/
 
         for (auto& tui: testUiMap)
         {
             int u = tui.first;
             auto& iSet = tui.second;
-            /*vector<int> uIntersectItems;
-            uIntersectItems.reserve(i + 1);
-            std::set_intersection(iSet.begin(), iSet.end(), recUiMap[u].begin(), recUiMap[u].end(), back_inserter(uIntersectItems));*/
             if (iSet.find(tmp(u)) != iSet.end())
             {
                 numerator[i] += 1;
             }
-            //numerator[i] += uIntersectItems.size();
-        }
-        if (i != N-1)
-        {
-            numerator[i + 1] = numerator[i];
         }        
     }
+    numerator.resize(N);
 
     vector<double> precisionVec(N);
     int intersectUserNum = (int)testUiMap.size();
@@ -590,67 +464,6 @@ pair<vector<double>, vector<double>> precisionRecall(const vector<T> & indexedTe
     //Matrix2Xd prMat(2, N);
     return make_pair(std::move(precisionVec), std::move(recallVec));
 }
-
-
-pair<vector<double>, vector<double>> precisionRecall(const vector<T> & test, const map<int, vector<int>>& recommend)
-{
-    auto testUiMap = tupleVecToUiMap(test);
-
-    vector<int> testUsers(testUiMap.size());
-    transform(testUiMap.begin(), testUiMap.end(), testUsers.begin(), [](pair<const int, vector<int>>& item) { return item.first; });
-    vector<int> recUsers(recommend.size());
-    transform(recommend.begin(), recommend.end(), recUsers.begin(), [](const pair<const int, vector<int>>& item) { return item.first; });
-    vector<int> intersectUsers;
-    intersectUsers.reserve(recommend.size());
-    std::set_intersection(testUsers.begin(), testUsers.end(), recUsers.begin(), recUsers.end(), back_inserter(intersectUsers));
-    
-    auto testSet = uiMapToPairSet(testUiMap);
-    int nRecommend = static_cast<int>(recommend.begin()->second.size());
-    vector<double> numerator(nRecommend);
-#pragma omp parallel for
-    for (int i = 0; i < (int)numerator.size(); ++i)
-    {
-        map<int, vector<int>> tmp = uiMapSlice(recommend, i+1);
-        auto recSet = uiMapToPairSet(tmp);
-        vector<pair<int, int>> intersectPairs;
-        intersectPairs.reserve(test.size());
-        std::set_intersection(testSet.begin(), testSet.end(), recSet.begin(), recSet.end(), back_inserter(intersectPairs));
-        numerator[i] = static_cast<double>(intersectPairs.size());
-    }
-    
-    vector<double> precisionVec(nRecommend);
-    int nIntersectUser = (int)intersectUsers.size();
-    /*generate(precisionVec.begin(), precisionVec.end(), [&numerator, nIntersectUser, i = 1](double a) mutable { 
-        return a / (nIntersectUser*i++); 
-    });*/
-    transform(numerator.begin(), numerator.end(), precisionVec.begin(), [nIntersectUser, i = 1](double a) mutable { 
-        return a / (nIntersectUser*i++); 
-    });
-    
-    //double precision = 1.0* intersectPairs.size() / (intersectUsers.size()* recommend.at(intersectUsers[0]).size());
-    
-    vector<double> recallVec(nRecommend);
-    double denominator = accumulate(intersectUsers.begin(), intersectUsers.end(), 0.0, [&testUiMap](double re, int u) {
-        return re + testUiMap[u].size();
-    });
-    transform(numerator.begin(), numerator.end(), recallVec.begin(), [denominator](double a) { return a / denominator; });
-    /*double recall = 0.0;
-    for (int u: intersectUsers)
-    {
-        recall += testUiMap[u].size();
-    }*/
-    //recall = 1.0* intersectPairs.size() / recall;
-
-
-    /*cout << "precision: " ;
-    std::copy(precisionVec.begin(), precisionVec.end(), std::ostream_iterator<double>(cout, " "));
-    cout << endl;
-    cout << "recall: ";
-    std::copy(recallVec.begin(), recallVec.end(), std::ostream_iterator<double>(cout, " "));
-    cout << endl;*/
-    return make_pair(precisionVec, recallVec);
-}
-
 
 Matrix<int,Dynamic,Dynamic,RowMajor>
 recommendIndexMatrix(const MatrixXd& rateMat, int N)
@@ -721,6 +534,21 @@ map<int, vector<int>> recommend(const MatrixXi& recIdxMat, const vector<int>& id
     return re;
 }
 
+vector<T> recommendResult(const MatrixXi& recIdxMat, const MatrixXd& rateMat, const vector<int>& idUserMap, const vector<int>& idItemMap)
+{
+    vector<T> re;
+    re.reserve(recIdxMat.size());
+    for (int i = 0; i < (int)recIdxMat.rows(); ++i)
+    {
+        for (int k = 0; k < (int)recIdxMat.cols(); ++k)
+        {
+            int j = (int)recIdxMat(i, k);
+            re.emplace_back(idUserMap[i], idItemMap[j], rateMat(i, j));
+        }
+    }
+    return re;
+}
+
 // exclude elements which is nonexistent in map
 vector<T> indexTuples(const vector<T>& originData, const map<int, int>& rowMap, const map<int,int>& colMap)
 {
@@ -731,7 +559,7 @@ vector<T> indexTuples(const vector<T>& originData, const map<int, int>& rowMap, 
         try {
             indexedData.emplace_back(rowMap.at(t.row()), colMap.at(t.col()), t.value());
         }
-        catch (const std::out_of_range& e)
+        catch (const std::out_of_range& )
         {
             //std::cerr << e.what() << '\n';
             continue;
@@ -773,27 +601,20 @@ MatrixXd svdpp(const vector<T>& td, const vector<T>& vd
     cout << "rate value: min " << (mmv.first)->value() << ",     max " << mmv.second->value() << endl;
     cout << "start constructing train matrix ..." << endl;
 
-    //SpMat A(userVec.size(), itemVec.size());
     SpMat A(n_rows, n_cols);
     A.setFromTriplets(td.begin(), td.end());
 
-    //int rNegPos = cmdline.getValue(param_np_ratio, 2);
-    //setNegSample(A, rNegPos);
     setNegSample(A, np_ratio);
     cout << "train matrix finished." << endl;
     MatrixXd P, Q, Y;
     VectorXd bu, bi;
     cout << "start to init ..." << endl;
-    //int F = cmdline.getValue(param_num_factor, 100);
+
     initParams(&P, &Q, &bu, &bi, &Y, static_cast<int>(A.outerSize()), static_cast<int>(A.innerSize()), n_factor);
     cout << "init finished." << endl;
 
-
-    //VectorXd coe = A.coeffs();
     double mu = A.coeffs().sum() / A.nonZeros();
 
-
-    //vector<double> lr = cmdline.getDblValues(param_learn_rate);
     function<double(int)> learnSchedule;
     if (lr[0] == 0)
     {
@@ -807,8 +628,7 @@ MatrixXd svdpp(const vector<T>& td, const vector<T>& vd
     {
         learnSchedule = [c = lr[1]](int n) {return c; };
     }
-    //vector<double> reg = cmdline.getDblValues(param_regular);
-    //int numIter = cmdline.getValue(param_num_iter, 100);
+
     learningSVDpp(A, vd, &P, &Q, &bu, &bi, mu, &Y, n_iters, learnSchedule, reg[0]);
     MatrixXd rateMat = predict(P, Q, Y, constructZ1(A), bu, bi, mu);
     cout << "rateMat success!" << endl;
@@ -825,8 +645,6 @@ int main(int argc, char** argv)
 
     CMDLine cmdline(argc, argv);
     const string param_in_file = cmdline.registerParameter("in", "filename for training data [MANDATORY]");
-    //const string param_train_file = cmdline.registerParameter("train", "filename for training data [MANDATORY]");
-    //const string param_test_file = cmdline.registerParameter("test", "filename for test data [MANDATORY]");
     const string param_out = cmdline.registerParameter("out", "filename for out data");
     const string param_learn_rate = cmdline.registerParameter("learn_rate", "learn_rate for SGD; default=0.1");
     const string param_regular = cmdline.registerParameter("regular", "'r0,r1,r2' for SGD and ALS: r0=bias regularization, r1=1-way regularization, r2=2-way regularization");
@@ -841,7 +659,6 @@ int main(int argc, char** argv)
     double tmp3 = 0.0;
     char ch;
     char buffer[256];
-    //ifstream input0("./train_data_8.csv");
     auto inStrs = cmdline.getStrValues(param_in_file);
     ifstream input0(inStrs[0]);
     map<int,int> userIdMap, itemIdMap;
@@ -875,12 +692,6 @@ int main(int argc, char** argv)
     transform(itemIdMap.begin(), itemIdMap.end(), itemVec.begin(), [](pair<const int, int>& a) { return a.first; });
 
     vector<T> indexedTVec = indexTuples(tVec,userIdMap,itemIdMap);
-    /*indexedTVec.reserve(tVec.size());
-    for (auto& t: tVec)
-    {
-        indexedTVec.emplace_back(userIdMap[t.row()], itemIdMap[t.col()], t.value());
-    }*/
-
     
     cout << "begin to read test data ";
     ifstream input1(inStrs[1]);
@@ -915,9 +726,6 @@ int main(int argc, char** argv)
     int n_Iter = cmdline.getValue(param_num_iter, 100);
     int n_recommend = cmdline.getValue(param_num_recommend, 100);
     vector<MatrixXd> rateMat(split_K);
-    //vector<vector<T>> recommendVec(split_K);
-    //vector<double> precisionVec(split_K);
-    //vector<double> recallVec(split_K);
     MatrixXd precisionMat(split_K, n_recommend);
     MatrixXd recallMat(split_K, n_recommend);
     for (int k = 0; k < split_K; ++k)
@@ -938,10 +746,7 @@ int main(int argc, char** argv)
         rateMat[k] = svdpp(trainData, validData, (int)userVec.size(), (int)itemVec.size(),
             np_ratio, n_factor, n_Iter,lr, reg);
         auto recIdxMat = recommendIndexMatrix(rateMat[k], n_recommend);
-        //auto recommendDict = topNRecommend(recIdxMat, userVec, itemVec);
         auto pr = precisionRecall(indexedTestData, recIdxMat);
-        //precisionVec[k] = pr.first;
-        //recallVec[k] = pr.second;
         precisionMat.row(k) = Map<RowVectorXd>(pr.first.data(), pr.first.size());
         recallMat.row(k) = Map<RowVectorXd>(pr.second.data(), pr.second.size());
     }
@@ -966,12 +771,7 @@ int main(int argc, char** argv)
     cout << "result precision : " << resultPRMat.row(0)<< endl;
     cout << "result recall : " << resultPRMat.row(1)<< endl;
 
-
-
-    if (cmdline.hasParameter(param_out))
-    {
-        string outfile = cmdline.getValue(param_out, "a.out");
-        //saveTuples(recommendVec[k], outfile);
-    }
+    string outfile = cmdline.getValue(param_out, "a.out");
+    saveTuples(recommendResult(resultRecIdxMat, resultRateMat, userVec, itemVec), outfile);
     return 0;
 }
